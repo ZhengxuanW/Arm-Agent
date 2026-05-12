@@ -1,0 +1,19 @@
+{
+  "calibrated_at": "2025-05-11",
+  "method": "camera_center_to_gripper_offset",
+  "z_scan": 200,
+  "z_hover": 140,
+  "z_grasp": 95,
+  "rz_grasp": 45,
+  "pixel_scale_mm_per_px_at_z200": 0.32,
+  "offset": {
+    "dx_mm": 30.0,
+    "dy_mm": 0.0,
+    "description": "抓取时，相机对准坐标需要加上此偏移，才是夹爪实际到达的位置"
+  },
+  "example": {
+    "camera_aligned_coords": [164.6, -1.9],
+    "actual_grasp_coords": [194.6, -1.9]
+  },
+  "formula": "grasp_x = detect_x + 30, grasp_y = detect_y + 0"
+}
