@@ -1,0 +1,90 @@
+{
+  "created_at": "2026-05-13T16:35:00",
+  "camera": {
+    "index": 1,
+    "name": "Logitech BRIO",
+    "resolution": [
+      1920,
+      1080
+    ]
+  },
+  "marker_type": "AprilTag_36h11",
+  "num_points": 3,
+  "world_points": [
+    [
+      140.0,
+      30.0
+    ],
+    [
+      10.0,
+      220.0
+    ],
+    [
+      60.0,
+      -250.0
+    ]
+  ],
+  "pixel_points": [
+    [
+      801.0,
+      523.0
+    ],
+    [
+      995.0,
+      836.0
+    ],
+    [
+      993.0,
+      119.0
+    ]
+  ],
+  "affine_matrix": [
+    [
+      -0.5601132358888441,
+      -0.0681726269570744,
+      624.3049858455141
+    ],
+    [
+      -0.07857184123866207,
+      0.6557282338667746,
+      -250.0098214801548
+    ]
+  ],
+  "apriltag_coords": {
+    "tag_1": {
+      "pixel": [
+        801,
+        523
+      ],
+      "world": [
+        140,
+        30
+      ]
+    },
+    "tag_2": {
+      "pixel": [
+        995,
+        836
+      ],
+      "world": [
+        10,
+        220
+      ]
+    },
+    "tag_4": {
+      "pixel": [
+        993,
+        119
+      ],
+      "world": [
+        60,
+        -250
+      ]
+    }
+  },
+  "note": "Updated 2026-05-13. Tag positions after camera adjustment.",
+  "usage": {
+    "python": "pixel_to_world(u, v, affine_matrix)",
+    "note": "输入(u,v)为BRIO像素坐标，输出(X,Y)为机械臂世界坐标(mm)"
+  }
+}

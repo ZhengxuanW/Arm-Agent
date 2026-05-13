@@ -1,35 +1,20 @@
 """
 motion_service.py
 =================
-机械臂运动控制核心服务。
+机械臂运动控制核心服务 — 硬件访问层。
 
-职责：
-  - 连接/断开机械臂和相机（长连接复用）
-  - 执行笛卡尔坐标运动、J6 视角转动
+职责（精简后）：
+  - 连接/断开机械臂和相机
+  - 执行笛卡尔坐标运动、关节运动
   - 拍照（单帧 + 连续流）
-  - 安全边界检查、到位检测
-  - 任务队列管理（异步执行）
+  - 安全边界检查（已恢复，非 pass）
+  - 夹爪控制
 
-特点：
-  - 纯 Python 类，不依赖 Flask/Web
-  - 可以被 import（共享实例）
-  - 也可以独立运行（对外暴露 HTTP 或 ZeroMQ）
-  - 视角与位置解耦：运动时自动保持当前 rz
-
-用法:
-    from motion_service import MotionService, get_motion_service
-
-    # 方式1: 单例（推荐，进程内共享）
-    svc = get_motion_service()
-    svc.connect()
-    svc.move_to(x=-80, y=90, z=200)
-    frame = svc.capture()
-
-    # 方式2: 独立实例
-    svc = MotionService()
-    svc.connect()
-    svc.rotate_j6(-20)
-    svc.close()
+重要变更：
+  - 单例已移除。所有上层代码应通过 local_agent.py 或 ai_agent_bridge.py 访问硬件，
+    不应直接 import 本模块。
+  - 安全边界检查已恢复（不再 pass），超限将抛出 RuntimeError。
+  - 所有硬编码参数已迁移到 config.py。
 """
 
 from __future__ import annotations
@@ -43,13 +28,27 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from camera_vision import EndEffectorCamera
-from pymycobot import MyCobot
+from config import (
+    END_CAMERA_FPS,
+    END_CAMERA_HEIGHT,
+    END_CAMERA_INDEX,
+    END_CAMERA_WIDTH,
+    HOME_COORDS,
+    HOME_SPEED,
+    INIT_ANGLES,
+    ROBOT_BAUD,
+    ROBOT_PORT,
+    SAFE_MAX_SPEED,
+    SAFE_X_LIMIT,
+    SAFE_Y_LIMIT,
+    SAFE_Z_LIMIT,
+    SINGULARITY_J5_THRESH,
+    get_safe_speed,
+    is_within_safe_boundary,
+)
+from vision import EndEffectorCamera
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_PORT = "/dev/cu.usbserial-1120"
-DEFAULT_BAUD = 1000000
 
 
 @dataclass
@@ -94,22 +93,20 @@ class MotionService:
     """
     机械臂运动控制核心。
 
-    特点:
-      - 长连接复用: 串口和相机只在初始化时打开一次
-      - 快速响应: 省去每次重新连接的开销
-      - 安全边界: 自动检查坐标边界
-      - 到位检测: 轮询 is_moving 而不是固定 sleep
-      - 视角解耦: rz 与位置运动分离
+    安全增强：
+      - 边界检查：超出 SAFE_*_LIMIT 将拒绝运动并抛出异常
+      - 奇异点检测：J5 接近 0° 时发出警告
+      - 自动限速：大距离运动时自动降低速度
     """
 
     def __init__(
         self,
-        port: str = DEFAULT_PORT,
-        baud: int = DEFAULT_BAUD,
-        camera_source: int = 0,
-        camera_width: int = 640,
-        camera_height: int = 480,
-        camera_fps: int = 30,
+        port: str = ROBOT_PORT,
+        baud: int = ROBOT_BAUD,
+        camera_source: int = END_CAMERA_INDEX,
+        camera_width: int = END_CAMERA_WIDTH,
+        camera_height: int = END_CAMERA_HEIGHT,
+        camera_fps: int = END_CAMERA_FPS,
     ):
         self.port = port
         self.baud = baud
@@ -118,7 +115,7 @@ class MotionService:
         self.camera_height = camera_height
         self.camera_fps = camera_fps
 
-        self.robot: Optional[MyCobot] = None
+        self.robot = None
         self.cam: Optional[EndEffectorCamera] = None
         self._connected = False
 
@@ -127,17 +124,13 @@ class MotionService:
         self._task_lock = threading.Lock()
         self._task_counter = 0
 
-        # 安全边界 (mm)
-        self.x_limit = (-220, 220)
-        self.y_limit = (30, 260)
-        self.z_limit = (50, 400)
-
     # ------------------------------------------------------------------
     # 连接管理
     # ------------------------------------------------------------------
 
     def connect(self, warmup: bool = True) -> bool:
         """连接机械臂和相机。"""
+        from pymycobot import MyCobot
         logger.info("Connecting to robot on %s @ %d ...", self.port, self.baud)
         try:
             self.robot = MyCobot(self.port, self.baud)
@@ -155,7 +148,6 @@ class MotionService:
             width=self.camera_width,
             height=self.camera_height,
             fps=self.camera_fps,
-            mode="index",
         )
         if not self.cam.open():
             logger.error("Camera open failed.")
@@ -189,31 +181,26 @@ class MotionService:
     # ------------------------------------------------------------------
 
     def _check_boundary(self, x: float, y: float, z: float) -> None:
-        """安全边界检查（已禁用，机械臂固件自行保护）。"""
-        pass
+        """
+        安全边界检查。
+        超出安全范围时抛出 RuntimeError，防止碰撞。
+        """
+        if not is_within_safe_boundary(x, y, z):
+            raise RuntimeError(
+                f"坐标 ({x}, {y}, {z}) 超出安全工作空间! "
+                f"X范围{SAFE_X_LIMIT}, Y范围{SAFE_Y_LIMIT}, Z范围{SAFE_Z_LIMIT}"
+            )
 
-    # ------------------------------------------------------------------
-    # 运动控制（同步）
-    # ------------------------------------------------------------------
-
-    def _is_near_singularity(self, angles: list, threshold: float = 5.0) -> bool:
-        """检查是否接近奇异点（J5 接近 0° 时 J4/J6 对齐）。"""
+    def _is_near_singularity(self, angles: list, threshold: float = SINGULARITY_J5_THRESH) -> bool:
+        """检查是否接近奇异点（J5 接近 0° 时 J4/J6 对齐）"""
         if not angles or len(angles) < 5:
             return False
         j5 = abs(angles[4])
         return j5 < threshold
 
-    def _get_safe_speed(self, current: list, target: list, base_speed: int) -> int:
-        """根据距离调整速度，避免大跨度高速运动。"""
-        if not current or len(current) < 3:
-            return min(base_speed, 30)
-        dist = ((current[0]-target[0])**2 + (current[1]-target[1])**2 + (current[2]-target[2])**2) ** 0.5
-        # 距离越大速度越低
-        if dist > 200:
-            return min(base_speed, 30)
-        elif dist > 100:
-            return min(base_speed, 40)
-        return min(base_speed, 50)
+    # ------------------------------------------------------------------
+    # 运动控制（同步）
+    # ------------------------------------------------------------------
 
     def move_to(
         self,
@@ -223,7 +210,7 @@ class MotionService:
         rx: float = -180.0,
         ry: float = 0.0,
         rz: Optional[float] = None,
-        speed: int = 50,
+        speed: int = 20,
         wait: bool = True,
         timeout: float = 15.0,
         poll_interval: float = 0.05,
@@ -231,11 +218,6 @@ class MotionService:
         """
         运动到指定笛卡尔坐标。
         rz=None 时自动保持当前视角角度。
-
-        安全增强:
-          - 自动检查奇异点
-          - 大距离自动降速
-          - 强制限速 max 50
         """
         if not self._connected:
             raise RuntimeError("Not connected. Call connect() first.")
@@ -248,7 +230,7 @@ class MotionService:
 
         # 奇异点警告
         if self._is_near_singularity(current_angles):
-            logger.warning("⚠️ NEAR SINGULARITY (J5=%.1f°). Movement may be unstable!", current_angles[4])
+            logger.warning("NEAR SINGULARITY (J5=%.1f°). Movement may be unstable!", current_angles[4])
 
         # 视角解耦
         if rz is None:
@@ -261,8 +243,8 @@ class MotionService:
         target = [float(x), float(y), float(z), float(rx), float(ry), effective_rz]
 
         # 安全速度
-        safe_speed = self._get_safe_speed(current_coords, target, speed)
-        safe_speed = min(safe_speed, 50)  # 硬上限
+        safe_speed = get_safe_speed(current_coords, target, speed)
+        safe_speed = min(safe_speed, SAFE_MAX_SPEED)
 
         logger.info("MOVE_TO %s speed=%d (safe=%d)", target, speed, safe_speed)
 
@@ -302,7 +284,7 @@ class MotionService:
         wait: bool = True,
         timeout: float = 5.0,
     ) -> dict:
-        """单独转动 J6 关节（末端自转 / 视角旋转）。"""
+        """单独转动 J6 关节（末端自转 / 视角旋转）"""
         if not self._connected:
             raise RuntimeError("Not connected. Call connect() first.")
 
@@ -323,19 +305,19 @@ class MotionService:
     def go_home(
         self,
         coords: Optional[list] = None,
-        speed: int = 30,
+        speed: int = HOME_SPEED,
         wait: bool = True,
     ) -> dict:
-        """回到 HOME 位姿。"""
-        home = coords or [0.0, 160.0, 200.0, -180.0, 0.0, 0.0]
+        """回到 HOME 位姿（笛卡尔空间）"""
+        home = coords or HOME_COORDS
         return self.move_to(*home, speed=speed, wait=wait)
 
-    def go_init(self, speed: int = 10, wait: bool = True) -> dict:
-        """回到初始化位姿（关节空间，安全近零位）。"""
+    def go_init(self, speed: int = HOME_SPEED, wait: bool = True) -> dict:
+        """回到初始化位姿（关节空间，安全近零位）"""
         if not self._connected:
             raise RuntimeError("Not connected. Call connect() first.")
 
-        init_angles = [0.0, 0.0, 0.0, 0.0, 20.0, 0.0]
+        init_angles = INIT_ANGLES
         logger.info("GO_INIT %s speed=%d", init_angles, speed)
         t0 = time.time()
         self.robot.send_angles(init_angles, speed)
@@ -343,7 +325,6 @@ class MotionService:
         if not wait:
             return {"success": True, "angles": init_angles, "elapsed_sec": time.time() - t0}
 
-        # 到位检测
         stopped = False
         timeout = 20.0
         poll_interval = 0.1
@@ -400,7 +381,7 @@ class MotionService:
         rx: float = -180.0,
         ry: float = 0.0,
         rz: Optional[float] = None,
-        speed: int = 50,
+        speed: int = 20,
     ) -> str:
         """非阻塞运动。返回 task_id。"""
         if not self._connected:
@@ -554,7 +535,7 @@ class MotionService:
     def scan_waypoints(
         self,
         waypoints: list[list[float]],
-        speed: int = 50,
+        speed: int = 20,
         settle: float = 0.3,
         callback=None,
     ) -> list[dict]:
@@ -580,35 +561,5 @@ class MotionService:
 
 
 # ------------------------------------------------------------------
-# 单例封装
+# 注意：不再提供全局单例。请通过 local_agent.py 访问硬件。
 # ------------------------------------------------------------------
-
-_default_service: Optional[MotionService] = None
-
-
-def get_motion_service() -> MotionService:
-    """获取默认服务实例（懒加载）。"""
-    global _default_service
-    if _default_service is None:
-        _default_service = MotionService()
-    return _default_service
-
-
-def shutdown_motion_service() -> None:
-    """关闭默认服务。"""
-    global _default_service
-    if _default_service:
-        _default_service.close()
-        _default_service = None
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO,
-                        format="%(asctime)s [%(levelname)s] %(message)s")
-    svc = MotionService()
-    if svc.connect():
-        print("Connected.")
-        print(svc.get_status())
-        svc.close()
-    else:
-        print("Failed to connect.")

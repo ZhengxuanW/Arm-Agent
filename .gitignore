@@ -1,0 +1,15 @@
+# Logs and runtime files
+*.log
+local_agent_logs/
+robot_state.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS
+.DS_Store
+
+# Debug/temp images generated at runtime
+debug_*.jpg
