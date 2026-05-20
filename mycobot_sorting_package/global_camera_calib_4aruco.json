@@ -1,0 +1,69 @@
+{
+  "calibration_type": "aruco_4_point",
+  "created_at": "2026-05-19T21:52:06",
+  "camera": {
+    "index": 1,
+    "name": "Overhead camera",
+    "resolution": [1920, 1080]
+  },
+  "marker_type": "ArUco_DICT_4X4_50",
+  "num_points": 4,
+  "pixel_points": [
+    [1045.75, 417.0],
+    [888.0, 422.25],
+    [1052.0, 851.75],
+    [897.5, 856.75]
+  ],
+  "world_points": [
+    [-59.1, -191.8],
+    [76.9, -177.0],
+    [-82.9, 189.1],
+    [52.2, 196.6]
+  ],
+  "affine_matrix": [
+    [-0.8694650814, -0.0400416918, 866.3666243995],
+    [-0.0431301886, 0.8687724411, -507.2574205175]
+  ],
+  "markers": [
+    {
+      "id": 0,
+      "global_pixel_uv": [1045.75, 417.0],
+      "end_aligned_robot_xy": [-59.1, -191.8],
+      "predicted_robot_xy": [-59.57, -190.08],
+      "fit_error_mm": 1.781
+    },
+    {
+      "id": 1,
+      "global_pixel_uv": [888.0, 422.25],
+      "end_aligned_robot_xy": [76.9, -177.0],
+      "predicted_robot_xy": [77.37, -178.72],
+      "fit_error_mm": 1.782
+    },
+    {
+      "id": 2,
+      "global_pixel_uv": [1052.0, 851.75],
+      "end_aligned_robot_xy": [-82.9, 189.1],
+      "predicted_robot_xy": [-82.42, 187.35],
+      "fit_error_mm": 1.819
+    },
+    {
+      "id": 3,
+      "global_pixel_uv": [897.5, 856.75],
+      "end_aligned_robot_xy": [52.2, 196.6],
+      "predicted_robot_xy": [51.72, 198.35],
+      "fit_error_mm": 1.82
+    }
+  ],
+  "fit_error": {
+    "mean_mm": 1.801,
+    "max_mm": 1.82
+  },
+  "source": {
+    "session_file": "aruco_calibration_session_20260519.json",
+    "final_global_capture": "local_agent_logs/20260519_212201/global_cap_215206_999.jpg"
+  },
+  "usage": {
+    "python": "pixel_to_world(u, v, affine_matrix)",
+    "note": "Input is overhead camera pixel (u, v); output is robot XY in mm."
+  }
+}

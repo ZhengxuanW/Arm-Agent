@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>moveit_probe</name>
+  <version>0.0.1</version>
+  <description>Small MoveIt sandbox probes.</description>
+  <maintainer email="local@example.invalid">local</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>moveit_msgs</depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

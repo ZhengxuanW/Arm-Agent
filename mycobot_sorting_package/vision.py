@@ -253,7 +253,7 @@ def pixel_to_world(
 ) -> Optional[Tuple[float, float]]:
     """
     将全局摄像头像素坐标转换为机械臂世界坐标 (mm)。
-    若未提供矩阵，自动尝试加载 global_camera_calib.json。
+    若未提供矩阵，自动尝试加载当前 4-ArUco 标定文件。
     """
     M = affine_matrix if affine_matrix is not None else load_affine_matrix()
     if M is None or M.shape != (2, 3):
@@ -269,7 +269,7 @@ def world_to_pixel(
 ) -> Optional[Tuple[float, float]]:
     """
     将世界坐标转换为像素坐标（需要逆矩阵）。
-    若未提供矩阵，自动尝试加载 global_camera_calib.json。
+    若未提供矩阵，自动尝试加载当前 4-ArUco 标定文件。
     """
     M = affine_matrix if affine_matrix is not None else load_affine_matrix()
     if M is None or M.shape != (2, 3):
@@ -289,17 +289,17 @@ def world_to_pixel(
 
 def compute_correction(
     dx_px: int, dy_px: int,
-    scale: float = 0.32,
+    step_mm_per_100px: float = 12.0,
     ratio: float = 0.6,
 ) -> Tuple[float, float]:
     """
-    根据像素偏移计算机械臂坐标修正量 (dX, dY)。
-    图像坐标系 -> 机械臂坐标系映射：
-      画面上方 -> X增加 (y像素减小) -> dX = -dy_px * scale * ratio
-      画面左方 -> Y增加 (x像素减小) -> dY = -dx_px * scale * ratio
+    根据当前 z=150/rz=-45 ArUco 实测方向给出保守小步修正量。
+
+    历史线性比例已禁用。当前经验只固定方向：目标在画面右下
+    时先增大 X/Y，目标在画面左上时先减小 X/Y。
     """
-    dX = -dy_px * scale * ratio
-    dY = -dx_px * scale * ratio
+    dX = (dy_px / 100.0) * step_mm_per_100px * ratio
+    dY = (dx_px / 100.0) * step_mm_per_100px * ratio
     return dX, dY
 
 

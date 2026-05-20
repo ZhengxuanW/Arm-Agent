@@ -1,0 +1,17 @@
+services:
+  moveit:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mycobot-moveit-sandbox:humble
+    container_name: mycobot-moveit-sandbox
+    network_mode: host
+    ipc: host
+    environment:
+      ROS_DOMAIN_ID: "42"
+      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+    volumes:
+      - ./ws:/sandbox/ws
+    working_dir: /sandbox/ws
+    stdin_open: true
+    tty: true

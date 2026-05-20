@@ -1,479 +1,266 @@
-# WORKFLOW.md — 抓取流程记录
+# WORKFLOW.md - Current Robot Workflow
 
-## 说明
+This document records the current tested workflow.
 
-本文档记录经过实际测试验证的抓取流程。与 `MANUAL.md`（API 说明书）互补：
-- `MANUAL.md` — 有什么 API、每个 API 的参数和返回值
-- `WORKFLOW.md` — 怎么组合使用这些 API、实际测试中的经验教训
+## Authority Boundary
 
-**注意**：以下流程基于当前硬件配置（myCobot 280 + 末端相机 640x480 + BRIO 1920x1080）和当前环境标定参数。换环境后可能需要调整。
+The agent is allowed to control the robot through `robot_service.py` HTTP APIs.
 
----
+The agent must not bypass HTTP by importing `MotionService`, running hardware scripts, or using deleted local-agent workflows.
 
-## 一、完整抓取流程（已验证）
+If the user asks for a physical task, execute it through HTTP APIs unless a safety check fails.
 
-### 1.1 获取状态并复位
+## Current State
 
-**目的**：确认机械臂当前连接状态，并通过 API 获取**实际物理位置**。
+Current valid setup:
 
-**重要区分**：
-- `position` API → 返回**当前实际位置**（机械臂编码器实时读取）
-- `log` API → 返回**历史操作记录**（之前做了什么，不能代表当前位置）
-- 机械臂可能被人工移动过，或上一次运动有误差，**必须调 API 确认实际位置，不能凭日志推断**
-
-**步骤 1：获取状态**
-
-**端点**：`POST /api/v1/status`
-
-**请求**：无
-
-**判断**：
-- `connected: true` → 机械臂已连接，继续下一步
-- `connected: false` → 调用 `init` 初始化连接
-
-**步骤 2：读取当前实际位置（必须）**
-
-**端点**：`POST /api/v1/position`
-
-**请求**：无
-
-**成功返回**：
-```json
-{
-  "status": "ok",
-  "action": "position",
-  "coords": [178.7, 33.5, 195.7, -178.42, 1.96, 43.5],
-  "angles": [0.87, -0.79, -0.61, -1.23, 20.74, 0.17]
-}
+```text
+robot service: http://127.0.0.1:5050
+robot port: /dev/cu.usbserial-1130
+end camera: 640x480, index 0
+overhead camera: 1920x1080, index 1
+calibration: global_camera_calib_4aruco.json
 ```
 
-**为什么不能只看日志**：
-- ❌ 日志只记录"之前发送了 move 到 (170, 0)"，不保证机械臂现在真的在那里
-- ✅ `position` API 直接读取编码器，返回**此时此刻的实际坐标**
-- 如果人工搬动了机械臂、或上一次运动因碰撞中断，日志和实际位置会不一致
-
-**步骤 3（可选）：读取历史日志**
-
-**端点**：`POST /api/v1/log`
-
-**请求**：`{"limit": 20}`
-
-**目的**：了解之前做过什么操作、是否成功、为什么失败。辅助决策，**不能替代 position API**。
-
-**步骤 4：复位机械臂（如果需要）**
-
-**端点**：`POST /api/v1/init`
-
-**判断条件**：
-- 如果 `position` 返回的位置明显不在安全/合理范围内 → 必须 init
-- 如果 AI 不确定当前状态是否安全 → 建议 init
-- 如果机械臂已在工作位置且状态清晰 → 可跳过 init（节省时间）
-
-**成功返回**：
-```json
-{
-  "status": "ok",
-  "action": "init",
-  "result": {
-    "success": true,
-    "actual_angles": [0.87, -0.79, -0.61, -1.23, 20.74, 0.17],
-    "elapsed_sec": 1.63
-  }
-}
-```
-
-**检查**：
-- `result.success` 必须为 `true`
-- 如果失败，停止后续操作，检查机械臂电源和串口
-
-**注意事项**：
-- 复位后机械臂会移动到零位（HOME），末端相机朝上，不会遮挡桌面
-- **必须在全局检测前完成**，否则机械臂可能遮挡全局摄像头视野
-- **不能凭日志判断是否需要 init**，必须看 position API 返回的实际位置
-
----
-
-### 1.2 全局摄像头粗定位（可选但推荐）
-
-**目的**：在机械臂复位、视野无遮挡后，快速获取目标物的大致位置，缩小搜索范围，避免末端相机在错误位置盲目扫描。
-
-**端点**：`POST /api/v1/global_detect`
-
-**请求**：
-```json
-{"color": "red"}
-```
-
-**成功返回**：
-```json
-{
-  "found": true,
-  "world_xy": [178.6, 74.0],
-  "pixel": [725, 581],
-  "area": 2026
-}
-```
-
-**关键参数**：
-- 全局摄像头分辨率：1920x1080
-- 标定矩阵：`global_camera_calib.json`
-- 检测 ROI：u=[500,1200], v=[300,800]
-
-**注意事项**：
-- ⚠️ `world_xy` 精度有限（误差可能 ±20~50mm），仅用于粗定位
-- ⚠️ 如果 `world_xy` 为 null，说明标定矩阵可能缺失或检测失败
-- ⚠️ 光照变化会影响全局检测，夜间/阴影下可能失败
-- ⚠️ 必须在 init 之后调用，否则机械臂可能遮挡视野
-
-**失败处理**：如果全局检测失败，直接使用默认起始位置 (170, 0) 开始末端扫描。
-
----
-
-### 1.3 移动到粗定位位置
-
-**端点**：`POST /api/v1/move`
-
-**请求**（使用全局检测的 world_xy）：
-```json
-{"x": 178.6, "y": 74.0, "z": 200}
-```
-
-**必须检查返回值**：
-```json
-{
-  "status": "ok",
-  "result": {
-    "success": true,      // ← 必须确认此项为 true
-    "actual": [177.9, 72.1, 195.7, ...]
-  }
-}
-```
-
-**注意事项**：
-- ⚠️ `result.success` 为 false 时，通常是超出安全边界或运动超时
-- ⚠️ `actual` 与 `target` 可能有 1-5mm 误差，属于正常范围
-- ⚠️ 如果 move 失败，立即停止后续操作，检查坐标是否在安全范围内
-
----
-
-### 1.4 末端相机检测
-
-**端点**：`POST /api/v1/detect`
-
-**请求**：
-```json
-{"color": "red"}
-```
-
-**成功返回**：
-```json
-{
-  "found": true,
-  "pixel": [208, 94],
-  "offset_from_center": [-112, -146],
-  "area": 36879
-}
-```
-
-**关键判断**：
-- `found` 为 true → 继续迭代对准
-- `found` 为 false → 需要搜索（见"常见问题"章节）
-
-**注意事项**：
-- ⚠️ 面积范围：MIN=300, MAX=100000（近距离大目标容易超出旧的上限 40000）
-- ⚠️ 如果 area 接近 100000，说明目标太近，相机可能无法完整框住
-- ⚠️ 如果 area 接近 300，说明目标太远或太小
-
----
-
-### 1.5 迭代对准
-
-**目标**：让 `|offset_from_center| < 20px`
-
-**修正公式**：
-```
-dX = -offset_y_px * SCALE * ALIGN_RATIO
-dY = -offset_x_px * SCALE * ALIGN_RATIO
-
-其中：
-  SCALE = 0.32 mm/px（Z=200 时的经验值）
-  ALIGN_RATIO = 0.6（60%，基于实际测试）
-```
-
-**示例**（offset=[-112, -146]）：
-```
-dX = -(-146) * 0.32 * 0.6 = +28.0 mm
-dY = -(-112) * 0.32 * 0.6 = +21.5 mm
-
-新位置: x = 178.0 + 28.0 = 206.0
-        y = 72.0 + 21.5 = 93.5
-```
-
-**迭代步骤**：
-1. 计算修正量
-2. 调用 `move` 到新位置
-3. 调用 `detect` 检查
-4. 如果 offset 仍 > 20px，重复步骤 1-3
-5. 最大迭代次数：8 次
-
-**从测试中总结的修正比例**：
-
-| 场景 | 推荐 ALIGN_RATIO | 说明 |
-|------|-----------------|------|
-| 初始对准（offset > 100px） | 0.6 | 快速接近 |
-| 精细调整（offset 20-100px） | 0.4-0.5 | 避免过冲 |
-| 微调整（offset < 20px） | 已收敛，停止 | 进入抓取 |
-
-**注意事项**：
-- ⚠️ 使用 60% 比例时，有时修正后目标反而丢失（过冲），此时应回退到上一步位置
-- ⚠️ 如果连续两次迭代后 offset 没有减小，说明比例过大，应降低到 0.4
-- ⚠️ 如果目标丢失（found=false），回退到上一次成功的位置，使用更小比例重试
-
----
-
-### 1.6 抓取
-
-**前提**：offset < 20px，当前相机坐标为 (cam_x, cam_y)
-
-**计算抓取坐标**：
-```
-grasp_x = cam_x + GRASP_OFFSET_X   // 30.0 mm
-grasp_y = cam_y + GRASP_OFFSET_Y   // 0.0 mm
-```
-
-**抓取序列**（必须严格按顺序，每步检查返回值）：
+Environment setup and service launch:
 
 ```bash
-# Step 1: 悬停（防止碰撞）
-POST /api/v1/move {"x": grasp_x, "y": grasp_y, "z": 140}
-# 检查: result.success == true
+scripts/setup_env.sh
+scripts/run_robot_service.sh
+```
 
-# Step 2: 降下到抓取高度
-POST /api/v1/move {"x": grasp_x, "y": grasp_y, "z": 95}
-# 检查: result.success == true
+The service must be run with project `.venv/bin/python` so `pymycobot`, Flask, OpenCV, and NumPy are all available in the same environment.
 
-# Step 3: 闭合夹爪
+Current fixed robot pose for scan, detection, and grasp work:
+
+```text
+z = 150
+rx = -180
+ry = 0
+rz = -45
+```
+
+Do not change these pose values during a grasp task unless the user explicitly approves. The current end-camera centering behavior and gripper offset are only validated under this pose.
+
+Current heights:
+
+```text
+z=150 scan/camera
+z=140 hover
+z=95 grasp
+z=105 release
+```
+
+Current gripper offset:
+
+```text
+grasp_x = camera_center_x - 30
+grasp_y = camera_center_y
+```
+
+This `-30mm` X offset is the current verified grasp correction.
+
+## Clean Workflow Model
+
+There are no default target areas and no automatic placement zones.
+
+The system does not maintain:
+
+```text
+color-to-target mapping
+default trash bins
+automatic place-by-color
+```
+
+After a successful grasp, the robot must hold at `z=140` until the user gives either an explicit next action or explicit release coordinates.
+
+## Start Of Any Task
+
+1. Check service:
+
+```bash
+curl -sS -X POST http://127.0.0.1:5050/api/v1/status
+```
+
+2. Read actual physical position:
+
+```bash
+curl -sS -X POST http://127.0.0.1:5050/api/v1/position
+```
+
+3. If the arm may block overhead vision or state is uncertain, call `init`:
+
+```bash
+curl -sS -X POST http://127.0.0.1:5050/api/v1/init
+```
+
+Do not infer current position from logs.
+
+## Overhead Detection
+
+Use `global_detect` to get a rough robot XY from the overhead camera:
+
+```bash
+curl -sS -X POST http://127.0.0.1:5050/api/v1/global_detect \
+  -H "Content-Type: application/json" -d '{"color":"yellow"}'
+```
+
+Experience from the latest tests:
+
+- Yellow was detected at about `[57.4, -200.1]`.
+- Green was near the lower edge of the overhead image, so ROI had to include `v` up to `900`.
+- Overhead detection is a rough starting point, not a grasp point.
+
+## End-Effector Centering
+
+Move to the overhead rough point at `z=150, rz=-45`, capture or detect with the end camera, then center the object.
+
+Goal:
+
+```text
+abs(offset_x) <= 20 px
+abs(offset_y) <= 20 px
+```
+
+Current `rz=-45` centering experience:
+
+- Target in image right/down: first try increasing X/Y.
+- Target in image left/up: first try decreasing X/Y.
+- Use small steps near the center; tiny target changes may not move the real robot because of mechanical resolution and position error.
+- If the correction makes the offset larger, reverse direction immediately.
+
+Green block threshold experience:
+
+```text
+end camera green HSV: [50, 120, 40] to [85, 255, 120]
+```
+
+The current green cube is dark. If `/api/v1/detect {"color":"green"}` fails but the cube is visible in `capture`, use this HSV range for local segmentation and continue centering from the measured pixel offset. The API currently does not support per-call HSV overrides.
+
+Overhead ROI experience:
+
+```text
+GLOBAL_ROI = u[500,1200], v[300,900]
+```
+
+The green cube has appeared near `v≈855`. If `global_detect green` returns `no contours in ROI`, use `global_capture` and run full-image or expanded-ROI segmentation instead of assuming the object is missing. The API currently does not support per-call ROI overrides.
+
+If the object appears too large at `z=150`, do not automatically move to `z=200` or another height. That changes the validated geometry. Stop and report the issue, or ask the user before running a new height experiment.
+
+## Grasp Workflow
+
+Prerequisite: object centered by end-effector camera.
+
+1. Read or use the current camera-centered robot XY.
+2. Apply current gripper offset:
+
+```text
+grasp_x = camera_center_x - 30
+grasp_y = camera_center_y
+```
+
+3. Execute grasp:
+
+```bash
+POST /api/v1/move {"x": grasp_x, "y": grasp_y, "z": 140, "rx": -180, "ry": 0, "rz": -45}
+POST /api/v1/move {"x": grasp_x, "y": grasp_y, "z": 95,  "rx": -180, "ry": 0, "rz": -45}
 POST /api/v1/gripper {"action": "close"}
-# 检查: status == "ok"
-
-# Step 4: 抬升
-POST /api/v1/move {"x": grasp_x, "y": grasp_y, "z": 140}
-# 检查: result.success == true
+POST /api/v1/move {"x": grasp_x, "y": grasp_y, "z": 140, "rx": -180, "ry": 0, "rz": -45}
 ```
 
-**注意事项**：
-- ⚠️ 抓取高度 Z=95 基于当前配置，不同物品可能需要调整
-- ⚠️ 夹爪闭合后应等待 0.5 秒再抬升，确保夹紧
-- ⚠️ 如果 Z=95 时夹爪碰到桌面，改为 Z=100 或 Z=105
+Always check every `move.result.success`.
 
----
+If centering fails because the object fills the image, do not infer a grasp point from unstable offsets. Stop and report the failure unless the user approves a different-height experiment.
 
-### 1.7 放置（可选）
+## Explicit Release Workflow
 
-如果需要放置到指定区域：
+Only release when the user provides explicit release coordinates or asks for a spatial relation that can be computed from current detections.
+
+Example from the verified task: place green near yellow.
+
+1. Detect yellow overhead.
+2. Choose an explicit nearby release point, offset from yellow enough to avoid collision.
+3. Execute release:
 
 ```bash
-# Step 1: 移动到放置区上方
-POST /api/v1/move {"x": 60, "y": 230, "z": 140}
-
-# Step 2: 降下
-POST /api/v1/move {"x": 60, "y": 230, "z": 105}
-
-# Step 3: 张开夹爪释放
+POST /api/v1/move {"x": release_x, "y": release_y, "z": 140, "rx": -180, "ry": 0, "rz": -45}
+POST /api/v1/move {"x": release_x, "y": release_y, "z": 105, "rx": -180, "ry": 0, "rz": -45}
 POST /api/v1/gripper {"action": "open"}
-
-# Step 4: 撤离
-POST /api/v1/move {"x": 60, "y": 230, "z": 140}
+POST /api/v1/move {"x": release_x, "y": release_y, "z": 140, "rx": -180, "ry": 0, "rz": -45}
 ```
 
----
+Verified result:
 
-### 1.8 安全关闭
-
-**端点**：`POST /api/v1/shutdown`
-
-任务结束后调用，会：
-1. 回零位
-2. 张开夹爪
-3. 断开机械臂连接
-
----
-
-## 二、常见问题与解决方案（来自实际测试）
-
-### 2.1 全局检测失败
-
-**现象**：`global_detect` 返回 `world_xy: null`
-
-**可能原因**：
-1. `global_camera_calib.json` 缺失或损坏
-2. 目标不在 BRIO 的 ROI 范围内
-3. 光照条件差
-
-**解决方案**：
-- 检查 `global_camera_calib.json` 是否存在
-- 直接用默认位置 (170, 0) 开始末端扫描
-- 调整环境光照
-
----
-
-### 2.2 末端检测不到目标
-
-**现象**：`detect` 返回 `found: false`
-
-**可能原因**：
-1. 机械臂位置偏差太大，目标不在视野内
-2. 颜色阈值不匹配（HSV 范围问题）
-3. 目标面积超出范围
-
-**解决方案**：
-1. **扫描搜索**：调用 `scan` API 在区域内蛇形移动拍照
-   ```json
-   {"x_range": [140, 200], "y_range": [-80, 80], "steps": 3, "z": 200}
-   ```
-2. **检查颜色阈值**：确认目标颜色在 `config.py` 的 `DEFAULT_COLOR_RANGES` 范围内
-3. **检查面积**：近距离目标可能 >40000，需要确保 `MAX_OBJECT_AREA` 足够大
-
----
-
-### 2.3 迭代对准过冲
-
-**现象**：修正后 `detect` 返回 `found: false`
-
-**可能原因**：
-- `ALIGN_RATIO` 过大（0.6 时容易过冲）
-- 坐标系方向理解错误
-
-**解决方案**：
-1. 回退到上一次成功的位置
-2. 降低 `ALIGN_RATIO` 到 0.4 或 0.3
-3. 确认修正公式方向正确：
-   ```
-   dX = -offset_y_px * SCALE * ratio
-   dY = -offset_x_px * SCALE * ratio
-   ```
-
----
-
-### 2.4 抓取时 move 被拒绝
-
-**现象**：抓取阶段的 `move` 返回 `status: error`
-
-**可能原因**：
-- 抓取坐标超出安全边界（如 X > 220）
-
-**解决方案**：
-1. 检查 `config.py` 中的 `SAFE_X_LIMIT`、`SAFE_Y_LIMIT`
-2. 如果目标在安全边界外，需要调整机械臂底座位置或重新规划抓取点
-3. 当前配置：X=[-280, 280], Y=[-280, 280]
-
----
-
-### 2.5 抓取后物品滑落
-
-**可能原因**：
-- 夹爪闭合力度不够
-- 抓取高度不正确（太高或太低）
-- 物品表面太光滑
-
-**解决方案**：
-- 调整夹爪闭合后的等待时间（当前 0.5s）
-- 尝试 Z=100 或 Z=90 调整抓取高度
-- 在夹爪内侧增加防滑垫（硬件改动）
-
----
-
-## 三、已验证的参数配置
-
-### 3.1 安全边界（config.py）
-
-```python
-SAFE_X_LIMIT = (-280, 280)
-SAFE_Y_LIMIT = (-280, 280)
-SAFE_Z_LIMIT = (30, 400)
+```text
+yellow final approx [57.4, -200.1]
+green final approx [87.4, -160.5]
+distance approx 49.7 mm
 ```
 
-**修改历史**：
-- 初始值：X=(-220, 220)，导致抓取时超出边界
-- 修改后：X=(-280, 280)，基于 myCobot 280 实际工作半径
+## 4-ArUco Calibration Workflow
 
-### 3.2 面积阈值（config.py）
+Current calibration is complete. Valid file:
 
-```python
-MIN_OBJECT_AREA = 300
-MAX_OBJECT_AREA = 100000
+```text
+global_camera_calib_4aruco.json
 ```
 
-**修改历史**：
-- 初始值：MAX=40000，导致近距离目标被过滤
-- 修改后：MAX=100000，覆盖近距离大目标
+Fit quality from the completed calibration:
 
-### 3.3 迭代对准参数（config.py）
-
-```python
-SCALE_Z200 = 0.32        # mm/px @ Z=200
-ALIGN_RATIO = 0.60       # 修正比例
-ALIGN_THRESH_PX = 20     # 收敛阈值
-MAX_ALIGN_ITERS = 8      # 最大迭代次数
+```text
+mean error: 1.801 mm
+max error: 1.82 mm
 ```
 
-**实际使用建议**：
-- offset > 100px 时用 0.6
-- offset 50-100px 时用 0.5
-- offset 20-50px 时用 0.4
+Recalibration workflow:
 
-### 3.4 夹爪偏移（config.py）
+1. `init` so the arm does not block overhead view.
+2. Overhead capture must see ArUco ids `0,1,2,3`.
+3. Read scan points from `aruco_scan_grid_selection.json` or `/dashboard/api/scan-grid`.
+4. For each point, run `init -> move(z=150, rz=-45) -> capture -> init`.
+5. For each detected marker, center it with the end camera and record actual robot XY from `/api/v1/position`.
+6. After four markers are recorded, call `init` again.
+7. Capture one final overhead frame and detect all four marker centers in that same image.
+8. Match by marker id and compute the overhead pixel to robot XY affine matrix.
+9. Save only `global_camera_calib_4aruco.json`.
 
-```python
-GRASP_OFFSET_X = 30.0    # mm
-GRASP_OFFSET_Y = 0.0     # mm
+## Files To Keep
+
+Runtime and current configuration files:
+
+```text
+robot_service.py
+motion_service.py
+vision.py
+config.py
+MANUAL.md
+WORKFLOW.md
+global_camera_calib_4aruco.json
+aruco_scan_grid_selection.json
+grasp_offset.json
 ```
 
-**注意**：仅在 Z=95 时验证有效，其他高度需要重新标定。
+Calibration audit data may be kept:
 
----
-
-## 四、调试技巧
-
-### 4.1 查看执行日志
-
-日志保存在 `local_agent_logs/YYYYMMDD_HHMMSS/` 目录下：
-- `cap_*.jpg` — capture API 拍摄的照片
-- `detect_*.jpg` — detect API 的调试图（带标注）
-- `scan_*.jpg` — scan API 的扫描照片
-- `global_*.jpg` — global_capture/global_detect 的照片
-
-### 4.2 手动验证检测
-
-如果 detect 失败，可以手动查看照片：
-
-```bash
-# 在目标位置拍照
-curl -X POST http://localhost:5000/api/v1/capture
-
-# 查看返回的 image_url，通过浏览器打开
-# http://localhost:5000/images/.../cap_xxx.jpg
+```text
+aruco_calibration_session_20260519.json
+local_agent_logs/
+robot_state.log
 ```
 
-### 4.3 检查当前位置
+## Service And Camera Recovery
 
-```bash
+If `capture`, `global_capture`, `/dashboard/api/status`, or camera health reports a failure:
+
+1. Stop the task.
+2. Report the exact failed endpoint and response.
+3. Do not kill processes or restart `robot_service.py` without explicit user approval.
+
+Only one `robot_service.py` process should run at a time. If the user approves a restart, verify before continuing:
+
+```text
+POST /api/v1/status
+GET /dashboard/api/status
+POST /api/v1/init
 POST /api/v1/position
 ```
-
-返回当前笛卡尔坐标和关节角度，用于排查位置偏差。
-
----
-
-## 五、更新记录
-
-| 日期 | 修改内容 | 原因 |
-|------|----------|------|
-| 2026-05-13 | 创建本文档 | 整理实际测试经验 |
-| 2026-05-13 | 安全边界扩展至 ±280 | 抓取时 X=234 超出原边界 220 |
-| 2026-05-13 | MAX_OBJECT_AREA 改为 100000 | 近距离目标面积 40176 超出原上限 40000 |
-| 2026-05-13 | 增加迭代对准比例建议 | 实际测试中发现 0.6 容易过冲 |
-
----
-
-*本文档随实际测试持续更新。每次发现新问题或优化参数后，应记录在此。*

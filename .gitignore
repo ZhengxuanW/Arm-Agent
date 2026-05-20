@@ -4,9 +4,11 @@ local_agent_logs/
 robot_state.log
 
 # Python
+.venv/
 __pycache__/
 *.pyc
 *.pyo
+*.egg-info/
 
 # OS
 .DS_Store

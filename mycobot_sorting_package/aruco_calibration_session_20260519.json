@@ -1,0 +1,107 @@
+{
+  "status": "completed",
+  "workflow": "two_stage_aruco_calibration",
+  "created_at": "2026-05-19T21:40:53",
+  "global_visibility_check": {
+    "image_path": "local_agent_logs/20260519_212201/global_cap_214053_121.jpg",
+    "markers": [
+      {"id": 0, "global_pixel_uv": [1045.75, 417.0]},
+      {"id": 1, "global_pixel_uv": [888.0, 422.75]},
+      {"id": 2, "global_pixel_uv": [1046.75, 848.25]},
+      {"id": 3, "global_pixel_uv": [892.0, 858.75]}
+    ],
+    "note": "Visibility check only; final calibration must use a new overhead image after all end-aligned robot positions are recorded."
+  },
+  "coarse_scan": {
+    "run_dir": "local_agent_logs/20260519_212201",
+    "latest_scan_window": "214131-214329",
+    "ids_found": [0, 2, 3],
+    "missing_ids": [1],
+    "best_by_id": [
+      {"id": 0, "source_scan_point": [-75.0, -200.0], "final_offset_px": [69.0, 70.25]},
+      {"id": 2, "source_scan_point": [-75.0, 200.0], "final_offset_px": [-65.5, -82.25]},
+      {"id": 3, "source_scan_point": [50.0, 200.0], "final_offset_px": [14.25, 2.25]}
+    ]
+  },
+  "end_aligned_records": [
+    {
+      "id": 3,
+      "end_aligned_robot_xy": [52.2, 196.6],
+      "end_aligned_robot_pose": [52.2, 196.6, 143.1, 177.19, -1.98, -45.15],
+      "final_offset_px": [5.75, -9.75],
+      "source_scan_point": [50.0, 200.0],
+      "capture_path": "local_agent_logs/20260519_212201/cap_214435_334.jpg"
+    },
+    {
+      "id": 0,
+      "end_aligned_robot_xy": [-59.1, -191.8],
+      "end_aligned_robot_pose": [-59.1, -191.8, 140.3, -176.18, 2.05, -44.62],
+      "final_offset_px": [4.0, -16.5],
+      "source_scan_point": [-75.0, -200.0],
+      "capture_path": "local_agent_logs/20260519_212201/cap_214728_223.jpg"
+    },
+    {
+      "id": 2,
+      "end_aligned_robot_xy": [-82.9, 189.1],
+      "end_aligned_robot_pose": [-82.9, 189.1, 139.9, 179.39, -4.19, -44.72],
+      "final_offset_px": [12.0, -5.0],
+      "source_scan_point": [-75.0, 200.0],
+      "capture_path": "local_agent_logs/20260519_212201/cap_214846_367.jpg"
+    },
+    {
+      "id": 1,
+      "end_aligned_robot_xy": [76.9, -177.0],
+      "end_aligned_robot_pose": [76.9, -177.0, 143.2, -178.62, 3.37, -44.82],
+      "final_offset_px": [-6.5, 7.75],
+      "source_scan_point": [75.0, -200.0],
+      "capture_path": "local_agent_logs/20260519_212201/cap_215122_797.jpg"
+    }
+  ],
+  "final_global_capture": {
+    "image_path": "local_agent_logs/20260519_212201/global_cap_215206_999.jpg",
+    "markers": [
+      {"id": 0, "global_pixel_uv": [1045.75, 417.0]},
+      {"id": 1, "global_pixel_uv": [888.0, 422.25]},
+      {"id": 2, "global_pixel_uv": [1052.0, 851.75]},
+      {"id": 3, "global_pixel_uv": [897.5, 856.75]}
+    ]
+  },
+  "matched_calibration_points": [
+    {
+      "id": 0,
+      "global_pixel_uv": [1045.75, 417.0],
+      "end_aligned_robot_xy": [-59.1, -191.8],
+      "predicted_robot_xy": [-59.57, -190.08],
+      "fit_error_mm": 1.781
+    },
+    {
+      "id": 1,
+      "global_pixel_uv": [888.0, 422.25],
+      "end_aligned_robot_xy": [76.9, -177.0],
+      "predicted_robot_xy": [77.37, -178.72],
+      "fit_error_mm": 1.782
+    },
+    {
+      "id": 2,
+      "global_pixel_uv": [1052.0, 851.75],
+      "end_aligned_robot_xy": [-82.9, 189.1],
+      "predicted_robot_xy": [-82.42, 187.35],
+      "fit_error_mm": 1.819
+    },
+    {
+      "id": 3,
+      "global_pixel_uv": [897.5, 856.75],
+      "end_aligned_robot_xy": [52.2, 196.6],
+      "predicted_robot_xy": [51.72, 198.35],
+      "fit_error_mm": 1.82
+    }
+  ],
+  "affine_matrix": [
+    [-0.8694650814, -0.0400416918, 866.3666243995],
+    [-0.0431301886, 0.8687724411, -507.2574205175]
+  ],
+  "fit_error": {
+    "mean_mm": 1.801,
+    "max_mm": 1.82
+  }
+}

@@ -11,7 +11,7 @@ motion_service.py
   - 夹爪控制
 
 重要变更：
-  - 单例已移除。所有上层代码应通过 local_agent.py 或 ai_agent_bridge.py 访问硬件，
+  - 单例已移除。所有上层代码应通过 robot_service.py HTTP API 访问硬件，
     不应直接 import 本模块。
   - 安全边界检查已恢复（不再 pass），超限将抛出 RuntimeError。
   - 所有硬编码参数已迁移到 config.py。
@@ -150,13 +150,13 @@ class MotionService:
             fps=self.camera_fps,
         )
         if not self.cam.open():
-            logger.error("Camera open failed.")
-            self.close()
-            return False
+            logger.warning("Camera open failed — running in arm-only mode.")
+            self.cam = None  # 仅移除相机，不阻断机械臂
 
-        for _ in range(5):
-            self.cam.grab()
-        logger.info("Camera ready.")
+        if self.cam:
+            for _ in range(5):
+                self.cam.grab()
+            logger.info("Camera ready.")
         return True
 
     def close(self) -> None:
@@ -267,11 +267,18 @@ class MotionService:
 
         elapsed = time.time() - t0
         actual = self.robot.get_coords()
+        reached = False
+        position_error = None
+        if actual and len(actual) >= 3:
+            position_error = [round(float(actual[i]) - float(target[i]), 2) for i in range(3)]
+            reached = all(abs(err) <= 15.0 for err in position_error)
 
         result = {
-            "success": stopped,
+            "success": bool(stopped and reached),
             "target": target,
             "actual": actual,
+            "position_error": position_error,
+            "reason": None if reached else "actual position did not reach target within 15mm",
             "elapsed_sec": round(elapsed, 2),
         }
         logger.info("MOVE_DONE in %.2fs -> actual=%s", elapsed, actual)
@@ -561,5 +568,5 @@ class MotionService:
 
 
 # ------------------------------------------------------------------
-# 注意：不再提供全局单例。请通过 local_agent.py 访问硬件。
+# 注意：不再提供全局单例。请通过 robot_service.py HTTP API 访问硬件。
 # ------------------------------------------------------------------

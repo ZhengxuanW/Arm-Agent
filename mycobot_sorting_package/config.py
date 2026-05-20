@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -25,14 +24,13 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).parent.resolve()
 LOG_DIR = PROJECT_ROOT / "local_agent_logs"
 STATE_LOG_FILE = PROJECT_ROOT / "robot_state.log"
-CALIB_FILE = PROJECT_ROOT / "global_camera_calib.json"
-MARKER_MAP_FILE = PROJECT_ROOT / "marker_map.json"
+CALIB_FILE = PROJECT_ROOT / "global_camera_calib_4aruco.json"
 GRASP_OFFSET_FILE = PROJECT_ROOT / "grasp_offset.json"
 
 # ---------------------------------------------------------------------------
 # 硬件连接配置（可通过环境变量覆盖）
 # ---------------------------------------------------------------------------
-ROBOT_PORT = os.getenv("MYCobot_PORT", "/dev/cu.usbserial-1110")
+ROBOT_PORT = os.getenv("MYCobot_PORT", "/dev/cu.usbserial-1130")
 ROBOT_BAUD = int(os.getenv("MYCobot_BAUD", "1000000"))
 
 # 相机索引 (macOS 下末端相机通常是 640x480, BRIO 是 1920x1080)
@@ -79,7 +77,8 @@ SINGULARITY_J5_THRESH = 5.0
 # ---------------------------------------------------------------------------
 # 高度层 (mm) — 定义清晰的高度语义
 # ---------------------------------------------------------------------------
-Z_SCAN = 200          # 扫描/拍照高度
+Z_SCAN = 150          # 扫描/拍照高度
+ARUCO_CALIB_RZ = -45.0  # 当前 4-ArUco 标定唯一验证姿态
 Z_APPROACH = 140      # 接近/悬停高度（防碰撞）
 Z_GRAB = 95           # 抓取高度（末端夹爪已补偿后）
 Z_RELEASE = 105       # 放置高度
@@ -87,9 +86,6 @@ Z_RELEASE = 105       # 放置高度
 # ---------------------------------------------------------------------------
 # 视觉参数
 # ---------------------------------------------------------------------------
-# 像素 -> 世界坐标比例 (Z=200mm 时的经验值)
-SCALE_Z200 = 0.32
-
 # 迭代对准参数
 ALIGN_RATIO = 0.60            # 每次修正偏移量的比例
 ALIGN_THRESH_PX = 20          # 像素收敛阈值
@@ -105,7 +101,7 @@ MIN_GLOBAL_AREA = 500         # 全局相机最小有效面积
 # 夹爪偏移 — 相机光心到夹爪中心的固定偏移 (mm)
 # 注意：只在 Z=95 验证有效，其余高度需另行标定
 # ---------------------------------------------------------------------------
-GRASP_OFFSET_X = 30.0
+GRASP_OFFSET_X = -30.0
 GRASP_OFFSET_Y = 0.0
 
 # ---------------------------------------------------------------------------
@@ -123,7 +119,7 @@ DEFAULT_COLOR_RANGES: Dict[str, List[ColorRange]] = {
         (np.array([100, 150, 0]), np.array([140, 255, 255])),
     ],
     "green": [
-        (np.array([40, 100, 100]), np.array([80, 255, 255])),
+        (np.array([50, 120, 40]), np.array([85, 255, 120])),
     ],
     "yellow": [
         (np.array([20, 100, 100]), np.array([35, 255, 255])),
@@ -153,117 +149,20 @@ GLOBAL_COLOR_RANGES: Dict[str, List[ColorRange]] = {
 # ---------------------------------------------------------------------------
 # 全局摄像头工作区域 ROI (像素坐标，针对 1920x1080)
 # ---------------------------------------------------------------------------
-GLOBAL_ROI = {"u_min": 500, "u_max": 1200, "v_min": 300, "v_max": 800}
-
-# ---------------------------------------------------------------------------
-# 扫描路径
-# ---------------------------------------------------------------------------
-# 紧凑扫描（末端精对准前）
-TIGHT_SCAN_OFFSETS = [(0, 0), (0, -25), (0, 25)]
-
-# 扩大扫描（紧凑扫描失败后）
-WIDE_SCAN_OFFSETS = [
-    (0, 0), (40, 0), (-40, 0),
-    (0, 40), (0, -40), (40, 40), (-40, -40)
-]
-
-# 默认扫描区域 (用于 scan 命令)
-DEFAULT_SCAN_X_RANGE = [140, 200]
-DEFAULT_SCAN_Y_RANGE = [-80, 80]
-DEFAULT_SCAN_STEPS = 3
-
-# ---------------------------------------------------------------------------
-# 放置目标区域坐标（从 marker_map.json 加载，失败则使用内置默认值）
-# ---------------------------------------------------------------------------
-
-@dataclass
-class Marker:
-    key: str
-    name: str
-    coords: Tuple[float, float]          # 相机对准坐标 (x, y)
-    release: Tuple[float, float]         # 实际释放坐标 (考虑偏移)
-    color: str
-    marker_type: str
-
-
-@dataclass
-class MarkerMap:
-    zone: str
-    placement_offset_note: str
-    markers: Dict[str, Marker] = field(default_factory=dict)
-    aliases: Dict[str, str] = field(default_factory=dict)
-
-    def resolve(self, key_or_alias: str) -> Optional[Marker]:
-        """通过键名或别名查找 Marker"""
-        key = self.aliases.get(key_or_alias, key_or_alias)
-        return self.markers.get(key)
-
-    def by_color(self, color: str) -> Optional[Marker]:
-        """根据颜色查找对应的 Marker"""
-        for m in self.markers.values():
-            if m.color == color.lower():
-                return m
-        return None
-
-
-def _load_marker_map(path: Path = MARKER_MAP_FILE) -> MarkerMap:
-    """加载 marker_map.json，失败时回退到硬编码默认值"""
-    defaults = {
-        "B": {"name": "蓝色", "coords": (-90, 230), "release": (-60, 230), "color": "blue", "type": "color"},
-        "G": {"name": "绿色", "coords": (-30, 230), "release": (0, 230), "color": "green", "type": "color"},
-        "R": {"name": "红色", "coords": (30, 230), "release": (60, 230), "color": "red", "type": "color"},
-        "Y": {"name": "黄色", "coords": (90, 230), "release": (120, 230), "color": "yellow", "type": "color"},
-    }
-    aliases = {
-        "蓝": "B", "蓝色": "B", "blue": "B",
-        "绿": "G", "绿色": "G", "green": "G",
-        "红": "R", "红色": "R", "red": "R",
-        "黄": "Y", "黄色": "Y", "yellow": "Y",
-    }
-    if path.exists():
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            markers = {}
-            for k, v in data.get("markers", {}).items():
-                markers[k] = Marker(
-                    key=k,
-                    name=v.get("name", k),
-                    coords=tuple(v["coords"]),
-                    release=tuple(v["release"]),
-                    color=v.get("color", "gray"),
-                    marker_type=v.get("type", "unknown"),
-                )
-            return MarkerMap(
-                zone=data.get("zone", "zone1"),
-                placement_offset_note=data.get("placement_offset", {}).get("note", ""),
-                markers=markers,
-                aliases=data.get("aliases", aliases),
-            )
-        except Exception:
-            pass  # fallthrough to defaults
-
-    # 硬编码回退
-    markers = {
-        k: Marker(key=k, name=v["name"], coords=v["coords"], release=v["release"],
-                  color=v["color"], marker_type=v["type"])
-        for k, v in defaults.items()
-    }
-    return MarkerMap(zone="zone1", placement_offset_note="release_x = camera_x + 30",
-                     markers=markers, aliases=aliases)
-
-
-MARKER_MAP: MarkerMap = _load_marker_map()
+GLOBAL_ROI = {"u_min": 500, "u_max": 1200, "v_min": 300, "v_max": 900}
 
 # ---------------------------------------------------------------------------
 # 全局摄像头标定矩阵加载
 # ---------------------------------------------------------------------------
 
 def load_affine_matrix(path: Path = CALIB_FILE) -> Optional[np.ndarray]:
-    """加载全局摄像头标定的仿射变换矩阵"""
+    """加载当前 4-ArUco 全局摄像头标定矩阵。"""
     if not path.exists():
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("calibration_type") != "aruco_4_point":
+            return None
         return np.array(data["affine_matrix"], dtype=np.float32)
     except Exception:
         return None
@@ -332,7 +231,7 @@ def get_safe_speed(current: Optional[List[float]], target: List[float], base_spe
 # ---------------------------------------------------------------------------
 __all__ = [
     # 路径
-    "PROJECT_ROOT", "LOG_DIR", "CALIB_FILE", "MARKER_MAP_FILE",
+    "PROJECT_ROOT", "LOG_DIR", "CALIB_FILE",
     # 硬件
     "ROBOT_PORT", "ROBOT_BAUD",
     "END_CAMERA_INDEX", "END_CAMERA_WIDTH", "END_CAMERA_HEIGHT", "END_CAMERA_FPS",
@@ -344,19 +243,16 @@ __all__ = [
     "DEFAULT_SPEED", "HOME_SPEED", "GRIPPER_SPEED", "SAFE_MAX_SPEED",
     "INIT_ANGLES", "HOME_COORDS", "SINGULARITY_J5_THRESH",
     # 高度
-    "Z_SCAN", "Z_APPROACH", "Z_GRAB", "Z_RELEASE",
+    "Z_SCAN", "ARUCO_CALIB_RZ", "Z_APPROACH", "Z_GRAB", "Z_RELEASE",
     # 视觉
-    "SCALE_Z200", "ALIGN_RATIO", "ALIGN_THRESH_PX", "MAX_ALIGN_ITERS", "ALIGN_SPEED",
+    "ALIGN_RATIO", "ALIGN_THRESH_PX", "MAX_ALIGN_ITERS", "ALIGN_SPEED",
     "MIN_OBJECT_AREA", "MAX_OBJECT_AREA", "MIN_GLOBAL_AREA",
     # 颜色
     "DEFAULT_COLOR_RANGES", "GLOBAL_COLOR_RANGES",
     # ROI & 扫描
-    "GLOBAL_ROI", "TIGHT_SCAN_OFFSETS", "WIDE_SCAN_OFFSETS",
-    "DEFAULT_SCAN_X_RANGE", "DEFAULT_SCAN_Y_RANGE", "DEFAULT_SCAN_STEPS",
+    "GLOBAL_ROI",
     # 偏移
     "GRASP_OFFSET_X", "GRASP_OFFSET_Y", "RUNTIME_GRASP_OFFSET",
-    # 数据结构
-    "Marker", "MarkerMap", "MARKER_MAP",
     # 函数
     "load_affine_matrix", "load_grasp_offset", "ensure_log_dir",
     "clamp", "is_within_safe_boundary", "get_safe_speed",
